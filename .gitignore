@@ -1,0 +1,7 @@
+.env
+/node_modules/
+images/
+pages/
+icon_files.csv
+created_pages.json
+urls.txt
