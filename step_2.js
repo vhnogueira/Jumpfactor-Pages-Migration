@@ -72,6 +72,263 @@ async function fetchWithRetry(url, options, maxAttempts = MAX_RETRIES) {
   throw new Error(`Failed after ${maxAttempts} attempts: ${lastError.message}`);
 }
 
+// ========== ICON MATCHING SYSTEM ==========
+
+// Predefined mappings for common service titles
+const SERVICE_ICON_MAPPINGS = {
+  // Exact matches (case-insensitive)
+  "managed it services": "shield-2",
+  "it consulting": "analytics-2",
+  "it helpdesk": "helpdesk",
+  "network support": "Network",
+  "network management": "Network",
+  "cloud services": "Cloud App",
+  "cloud solutions": "cloud-1",
+  "cloud integration": "cloud-connect",
+  "cybersecurity": "firewall",
+  "cybersecurity solutions": "shield-2",
+  "cybersecurity protection": "shield-3",
+  "it support": "headphones",
+  "24/7 it support": "helpdesk",
+  "24/7 live support": "helpdesk-head",
+  "data backup and recovery": "backup-files",
+  "data backup & recovery": "backup-files",
+  "it compliance and audits": "certificate",
+  "compliance solutions": "certificate-2",
+  "voip services": "phone-1",
+  "voip solutions": "phone-2",
+  "strategic it consulting": "business-2",
+  "device management": "Monitoring",
+  "business continuity": "business-3",
+  "help desk": "headphones",
+  "cloud computing": "Cloud Internet",
+  "security": "shield-2",
+  "backup": "backup-files",
+  "disaster recovery": "business-3",
+};
+
+// Keyword-based fallback mappings
+const KEYWORD_ICON_MAPPINGS = {
+  cloud: "cloud-1",
+  security: "shield-2",
+  cyber: "firewall",
+  network: "Network",
+  backup: "backup-files",
+  recovery: "backup-files",
+  voip: "phone-1",
+  phone: "phone-2",
+  call: "phone-1",
+  helpdesk: "helpdesk",
+  support: "headphones",
+  help: "helpdesk-head",
+  consult: "analytics-2",
+  monitor: "Monitoring",
+  compliance: "certificate",
+  audit: "certificate-2",
+  manage: "gear-man",
+  device: "monitor-1",
+  data: "Folder Data",
+  analytics: "analytics-2",
+  business: "business-2",
+  continuity: "business-3",
+};
+
+// Fallback icon preference order
+const FALLBACK_ICONS = ["gear-man", "business-2", "apps"];
+
+function loadIconLibrary() {
+  const iconCsvPath = path.join(process.cwd(), "icon_files.csv");
+
+  if (!fs.existsSync(iconCsvPath)) {
+    console.warn("⚠️  icon_files.csv not found. Icons will not be assigned.");
+    return [];
+  }
+
+  try {
+    const csvContent = fs.readFileSync(iconCsvPath, "utf8");
+    const lines = csvContent.trim().split("\n");
+
+    // Skip header row
+    const dataLines = lines.slice(1);
+
+    const iconLibrary = dataLines
+      .map((line) => {
+        const [id, title, filename, url, alt_text] = line.split(",");
+
+        // Only process icons with "Icon=" prefix
+        if (!title || !title.startsWith("Icon=")) {
+          return null;
+        }
+
+        // Extract icon name from title (e.g., "Icon=Shield" → "Shield")
+        const iconName = title.replace("Icon=", "").trim();
+
+        return {
+          id: parseInt(id, 10),
+          title: title.trim(),
+          iconName,
+          filename: filename ? filename.trim() : "",
+          url: url ? url.trim() : "",
+        };
+      })
+      .filter((icon) => icon !== null);
+
+    return iconLibrary;
+  } catch (error) {
+    console.error(`❌ Error parsing icon_files.csv: ${error.message}`);
+    return [];
+  }
+}
+
+function normalizeServiceTitle(htmlTitle) {
+  if (!htmlTitle || typeof htmlTitle !== "string") {
+    return "";
+  }
+
+  // Strip HTML tags
+  let cleaned = htmlTitle.replace(/<[^>]*>/g, "");
+
+  // Convert to lowercase
+  cleaned = cleaned.toLowerCase();
+
+  // Remove extra whitespace
+  cleaned = cleaned.replace(/\s+/g, " ").trim();
+
+  return cleaned;
+}
+
+function findAvailableIcon(iconName, iconLibrary, usedIconIds) {
+  // Find icon by iconName that is not in usedIconIds
+  const icon = iconLibrary.find(
+    (icon) =>
+      icon.iconName.toLowerCase() === iconName.toLowerCase() &&
+      !usedIconIds.has(icon.id)
+  );
+
+  return icon || null;
+}
+
+function scoreIconByKeywords(normalizedTitle, iconName) {
+  let score = 0;
+
+  // Split normalized title into words
+  const words = normalizedTitle.split(" ");
+
+  // Check each word against keyword mappings
+  for (const word of words) {
+    const mappedIcon = KEYWORD_ICON_MAPPINGS[word];
+    if (mappedIcon && mappedIcon.toLowerCase() === iconName.toLowerCase()) {
+      score += 2; // Higher score for keyword match
+    }
+  }
+
+  // Check if icon name appears anywhere in title
+  if (normalizedTitle.includes(iconName.toLowerCase())) {
+    score += 1;
+  }
+
+  return score;
+}
+
+function findBestIconMatch(serviceTitle, iconLibrary, usedIconIds) {
+  // Step 1: Normalize service title
+  const normalizedTitle = normalizeServiceTitle(serviceTitle);
+
+  if (!normalizedTitle) {
+    return null;
+  }
+
+  // Step 2: Try exact match in predefined mappings
+  if (SERVICE_ICON_MAPPINGS[normalizedTitle]) {
+    const iconName = SERVICE_ICON_MAPPINGS[normalizedTitle];
+    const icon = findAvailableIcon(iconName, iconLibrary, usedIconIds);
+    if (icon) {
+      return icon;
+    }
+  }
+
+  // Step 3: Try keyword-based matching
+  const availableIcons = iconLibrary.filter(
+    (icon) => !usedIconIds.has(icon.id)
+  );
+
+  if (availableIcons.length === 0) {
+    return null; // No icons left
+  }
+
+  // Score each available icon
+  let bestIcon = null;
+  let bestScore = 0;
+
+  for (const icon of availableIcons) {
+    const score = scoreIconByKeywords(normalizedTitle, icon.iconName);
+    if (score > bestScore) {
+      bestScore = score;
+      bestIcon = icon;
+    }
+  }
+
+  // If we found a match with score > 0, return it
+  if (bestIcon && bestScore > 0) {
+    return bestIcon;
+  }
+
+  // Step 4: Fallback - try to use generic icons
+  for (const fallbackName of FALLBACK_ICONS) {
+    const icon = findAvailableIcon(fallbackName, iconLibrary, usedIconIds);
+    if (icon) {
+      return icon;
+    }
+  }
+
+  // Step 5: Last resort - return any available icon
+  return availableIcons.length > 0 ? availableIcons[0] : null;
+}
+
+function assignIconsToServices(services, iconLibrary) {
+  if (!services || !Array.isArray(services) || services.length === 0) {
+    return services;
+  }
+
+  if (!iconLibrary || iconLibrary.length === 0) {
+    console.warn("  ⚠️  No icons available in library");
+    return services;
+  }
+
+  const usedIconIds = new Set();
+
+  console.log(`  Assigning icons to ${services.length} services...`);
+
+  for (const service of services) {
+    if (!service.service_title) {
+      continue;
+    }
+
+    const icon = findBestIconMatch(
+      service.service_title,
+      iconLibrary,
+      usedIconIds
+    );
+
+    if (icon) {
+      service.service_icon = icon.id;
+      usedIconIds.add(icon.id);
+      console.log(
+        `    "${normalizeServiceTitle(service.service_title)}" → ${icon.iconName} (${icon.id})`
+      );
+    } else {
+      console.warn(
+        `    ⚠️  No unique icon found for: "${normalizeServiceTitle(service.service_title)}"`
+      );
+      service.service_icon = null;
+    }
+  }
+
+  console.log(`  ✓ Icons assigned: ${usedIconIds.size} unique icons used`);
+
+  return services;
+}
+
 // ========== WORDPRESS API FUNCTIONS ==========
 
 async function createPage(payload) {
@@ -205,8 +462,8 @@ function sanitizeAcfData(acfData) {
   if (acfData && typeof acfData === "object") {
     const sanitized = {};
     for (const [key, value] of Object.entries(acfData)) {
-      // Skip icon fields entirely - don't include them in payload
-      if (key === "icon" || key === "service_icon") {
+      // Skip ONLY the "icon" field, but KEEP "service_icon"
+      if (key === "icon") {
         continue;
       }
 
@@ -248,7 +505,7 @@ function extractFieldsForWordPress(pageData) {
 
 // ========== MAIN PROCESSING FUNCTIONS ==========
 
-async function processPage(jsonFile, jsonRecords, index, total) {
+async function processPage(jsonFile, jsonRecords, index, total, iconLibrary) {
   const pageData = JSON.parse(fs.readFileSync(jsonFile, "utf8"));
   const originId = pageData.id;
   const pageTitle = pageData.title.rendered;
@@ -261,6 +518,14 @@ async function processPage(jsonFile, jsonRecords, index, total) {
   const isUpdate = !!existingRecord;
 
   console.log(`  Mode: ${isUpdate ? "UPDATE" : "CREATE"}`);
+
+  // Assign icons to services before processing
+  if (pageData.acf && pageData.acf.services_repeater) {
+    pageData.acf.services_repeater = assignIconsToServices(
+      pageData.acf.services_repeater,
+      iconLibrary
+    );
+  }
 
   // Extract fields to send
   const payload = extractFieldsForWordPress(pageData);
@@ -480,6 +745,10 @@ async function main() {
   // Load or fetch SVG media files
   await loadOrFetchSvgMedia();
 
+  // Load icon library for service icon matching
+  const iconLibrary = loadIconLibrary();
+  console.log(`✓ Loaded ${iconLibrary.length} icons from icon_files.csv\n`);
+
   // Load image pool
   loadImagePool();
   console.log(`✓ Loaded ${imagePool.length} images from /images/\n`);
@@ -512,7 +781,8 @@ async function main() {
         jsonFiles[i],
         jsonRecords,
         i + 1,
-        jsonFiles.length
+        jsonFiles.length,
+        iconLibrary
       );
       results.push({ success: true, result });
     } catch (error) {
