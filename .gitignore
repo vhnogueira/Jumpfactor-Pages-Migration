@@ -1,6 +1,7 @@
 .env
 /node_modules/
-images/
+images/*
+!images/.gitkeep
 pages/
 icon_files.csv
 created_pages.json
